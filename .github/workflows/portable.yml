@@ -1,0 +1,53 @@
+name: Portable Build (lite)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-portable:
+    name: 🧳 Windows portable archive
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Node.js setup
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+
+      - name: 📦 Install frontend dependencies
+        run: npm ci
+
+      - name: 🦀 Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 💾 Rust build cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      # tauri.ci.conf.json 关闭 createUpdaterArtifacts，
+      # 因此不需要 TAURI_SIGNING_PRIVATE_KEY 即可完成构建。
+      - name: 🏗️ Build application
+        run: npx tauri build --ci --config src-tauri/tauri.ci.conf.json
+
+      - name: 🧳 Build portable archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/release/build_windows_portable.cjs \
+            --version "1.3.79-lite" \
+            --release-dir "target/release" \
+            --output-dir "portable-assets"
+
+      - name: 📤 Upload portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cockpit-tools-portable
+          path: portable-assets/*
+          if-no-files-found: error
+          retention-days: 14
