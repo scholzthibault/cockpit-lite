@@ -50,12 +50,18 @@ interface FlyingRocket {
 type SideNavEntryId = PlatformLayoutEntryId | ApiRelayLayoutEntryId;
 
 /**
- * LITE 构建开关：只保留 Codex 平台与仪表盘/日志/设置。
+ * LITE 构建开关：只保留 Codex 与 Antigravity(Gemini)，外加仪表盘/日志/设置。
  * 设为 false 即恢复上游完整侧边栏。
  */
 const LITE_MODE = true;
-/** LITE 模式下允许出现在侧边栏的平台（Codex 主体 + Codex API 服务子组） */
-const LITE_ALLOWED_PLATFORMS = new Set<PlatformId>(['codex', 'codex_api_service']);
+/** LITE 模式下允许出现在侧边栏的平台 */
+const LITE_ALLOWED_PLATFORMS = new Set<PlatformId>([
+  'codex',
+  'codex_api_service',
+  // Google Gemini 入口（Antigravity 主程序 + IDE）
+  'antigravity',
+  'antigravity_ide',
+]);
 
 interface SideNavEntry {
   id: SideNavEntryId;

@@ -40,7 +40,7 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/release/build_windows_portable.cjs \
-            --version "1.3.79-lite" \
+            --version "1.3.80-lite" \
             --release-dir "target/release" \
             --output-dir "portable-assets"
 
