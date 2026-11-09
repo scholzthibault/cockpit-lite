@@ -2,13 +2,20 @@ name: Portable Build (lite)
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "构建后发布 GitHub Release"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
 
 jobs:
   windows-portable:
     name: 🧳 Windows portable archive
     runs-on: windows-latest
-    permissions:
-      contents: read
     steps:
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
@@ -35,19 +42,68 @@ jobs:
       - name: 🏗️ Build application
         run: npx tauri build --ci --config src-tauri/tauri.ci.conf.json
 
-      - name: 🧳 Build portable archive
-        shell: bash
+      # 上游 build_windows_portable.cjs 只收 target/release/resources，
+      # 会把 bundle.resources（图标/许可证/连桥脚本）漏掉。
+      # 这里按 tauri.conf.json 的映射自行暂存，产出完整包。
+      - name: 🧳 Stage portable package
+        id: pkg
+        shell: pwsh
         run: |
-          set -euo pipefail
-          node scripts/release/build_windows_portable.cjs \
-            --version "1.3.80-lite" \
-            --release-dir "target/release" \
-            --output-dir "portable-assets"
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $stage = 'portable-stage'
+          Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $stage | Out-Null
+
+          $exe = Get-ChildItem 'target/release' -Filter '*.exe' -File |
+            Where-Object { $_.Name -like 'cockpit*' } | Select-Object -First 1
+          if (-not $exe) { throw 'cockpit-tools.exe not found in target/release' }
+          Copy-Item $exe.FullName (Join-Path $stage 'cockpit-tools.exe')
+          Write-Host "executable: $($exe.Name) ($([math]::Round($exe.Length/1MB,2)) MB)"
+
+          $cfg = Get-Content 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json
+          $count = 0
+          foreach ($p in $cfg.bundle.resources.PSObject.Properties) {
+            $src = [System.IO.Path]::GetFullPath((Join-Path 'src-tauri' $p.Name))
+            if (-not (Test-Path $src)) { throw "missing resource source: $src" }
+            $dst = Join-Path $stage ($p.Value -replace '/', '\')
+            $dstDir = Split-Path $dst -Parent
+            if (-not (Test-Path $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
+            Copy-Item $src $dst -Force
+            $count++
+          }
+          Write-Host "staged $count bundle resources"
+
+          if (Test-Path 'target/release/resources') {
+            Copy-Item 'target/release/resources' $stage -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Path 'portable-assets' -Force | Out-Null
+          $zip = "portable-assets/Cockpit.Tools_${version}-lite_x64-portable.zip"
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
+          Write-Host "archive: $zip ($([math]::Round((Get-Item $zip).Length/1MB,2)) MB)"
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: 📤 Upload portable artifact
         uses: actions/upload-artifact@v4
         with:
           name: cockpit-tools-portable
-          path: portable-assets/*
+          path: portable-assets/*.zip
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
+
+      - name: 🏷️ Publish GitHub Release
+        if: ${{ inputs.publish_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.pkg.outputs.version }}-lite
+          name: Cockpit Tools ${{ steps.pkg.outputs.version }} Lite (portable)
+          body: |
+            精简版构建：侧边栏只保留 **Codex** 与 **Antigravity(Gemini)**，外加仪表盘 / 日志 / 设置。
+
+            包含完整运行资源（licenses、native-menu-icons、scripts），**解压即用，无需安装**。
+
+            > 需要 Windows 10/11 与 WebView2 运行时（Win11 已内置）。
+            > 本构建修改自上游 [jlcodes99/cockpit-tools](https://github.com/jlcodes99/cockpit-tools)，仅供个人使用。
+          files: portable-assets/*.zip
+          fail_on_unmatched_files: true
