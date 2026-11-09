@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   windows-portable:
-    name: 🧳 Windows portable archive
+    name: 🪟 Windows portable archive
     runs-on: windows-latest
     steps:
       - name: 📥 Checkout repository
@@ -82,28 +82,120 @@ jobs:
           $zip = "portable-assets/Cockpit.Tools_${version}-lite_x64-portable.zip"
           Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
           Write-Host "archive: $zip ($([math]::Round((Get-Item $zip).Length/1MB,2)) MB)"
-          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      - name: 📤 Upload portable artifact
+      - name: 📤 Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cockpit-tools-portable
+          name: portable-windows
           path: portable-assets/*.zip
           if-no-files-found: error
           retention-days: 30
 
-      - name: 🏷️ Publish GitHub Release
-        if: ${{ inputs.publish_release }}
+  macos-portable:
+    name: 🍎 macOS universal portable app
+    runs-on: macos-latest
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Node.js setup
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+
+      - name: 📦 Install frontend dependencies
+        run: npm ci
+
+      - name: 🦀 Rust toolchain (universal targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: 💾 Rust build cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: macos-universal
+
+      - name: 🏗️ Build universal .app
+        run: npx tauri build --ci --config src-tauri/tauri.ci.conf.json --target universal-apple-darwin --bundles app
+
+      - name: 🔏 Ad-hoc codesign
+        run: |
+          set -euo pipefail
+          APP="target/universal-apple-darwin/release/bundle/macos/Cockpit Tools.app"
+          if [ ! -d "$APP" ]; then
+            echo "app bundle not found, searching..."
+            APP=$(find target -maxdepth 6 -type d -name '*.app' | head -n 1)
+          fi
+          test -n "$APP"
+          echo "signing: $APP"
+          codesign --force --deep --sign - "$APP"
+
+      - name: 🧳 Package .app as zip
+        id: pkg
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          APP="target/universal-apple-darwin/release/bundle/macos/Cockpit Tools.app"
+          if [ ! -d "$APP" ]; then
+            APP=$(find target -maxdepth 6 -type d -name '*.app' | head -n 1)
+          fi
+          test -n "$APP"
+          mkdir -p portable-assets
+          ZIP="portable-assets/Cockpit.Tools_${VERSION}-lite_universal-macos.zip"
+          # ditto 保留符号链接、权限和扩展属性，普通 zip 会破坏 .app 结构
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+          ls -lh portable-assets
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: 📤 Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-macos
+          path: portable-assets/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: 🏷️ Publish release
+    needs: [windows-portable, macos-portable]
+    if: ${{ inputs.publish_release }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 📦 Read version
+        id: ver
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: 📥 Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 📋 List release assets
+        run: ls -lh dist
+
+      - name: 🏷️ Create / update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.pkg.outputs.version }}-lite
-          name: Cockpit Tools ${{ steps.pkg.outputs.version }} Lite (portable)
+          tag_name: v${{ steps.ver.outputs.version }}-lite
+          name: Cockpit Tools ${{ steps.ver.outputs.version }} Lite
           body: |
             精简版构建：侧边栏只保留 **Codex** 与 **Antigravity(Gemini)**，外加仪表盘 / 日志 / 设置。
 
-            包含完整运行资源（licenses、native-menu-icons、scripts），**解压即用，无需安装**。
+            | 平台 | 文件 | 说明 |
+            |---|---|---|
+            | Windows | `*-x64-portable.zip` | 解压即用，需 WebView2（Win11 内置） |
+            | macOS | `*-universal-macos.zip` | Universal（Intel + Apple Silicon），解压后拖到「应用程序」 |
 
-            > 需要 Windows 10/11 与 WebView2 运行时（Win11 已内置）。
-            > 本构建修改自上游 [jlcodes99/cockpit-tools](https://github.com/jlcodes99/cockpit-tools)，仅供个人使用。
-          files: portable-assets/*.zip
+            **macOS 首次运行**：应用未签名，若提示「已损坏」或「无法验证开发者」，执行
+            `xattr -cr /Applications/Cockpit\ Tools.app` 后再次打开，或右键 → 打开。
+
+            > 修改自 [jlcodes99/cockpit-tools](https://github.com/jlcodes99/cockpit-tools)，仅供个人使用。
+          files: dist/*
           fail_on_unmatched_files: true
