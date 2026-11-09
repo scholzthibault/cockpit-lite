@@ -13,8 +13,8 @@ permissions:
   contents: write
 
 jobs:
-  windows-portable:
-    name: 🪟 Windows portable archive
+  windows-release:
+    name: 🪟 Windows (portable + installer)
     runs-on: windows-latest
     steps:
       - name: 📥 Checkout repository
@@ -38,13 +38,14 @@ jobs:
           workspaces: ". -> target"
 
       # tauri.ci.conf.json 关闭 createUpdaterArtifacts，
-      # 因此不需要 TAURI_SIGNING_PRIVATE_KEY 即可完成构建。
-      - name: 🏗️ Build application
+      # 因此不需要 TAURI_SIGNING_PRIVATE_KEY。
+      # targets 默认 all -> Windows 产出 nsis(setup.exe) + msi
+      - name: 🏗️ Build application and installers
         run: npx tauri build --ci --config src-tauri/tauri.ci.conf.json
 
       # 上游 build_windows_portable.cjs 只收 target/release/resources，
       # 会把 bundle.resources（图标/许可证/连桥脚本）漏掉。
-      # 这里按 tauri.conf.json 的映射自行暂存，产出完整包。
+      # 这里按 tauri.conf.json 的映射自行暂存，产出完整便携包。
       - name: 🧳 Stage portable package
         id: pkg
         shell: pwsh
@@ -78,21 +79,39 @@ jobs:
             Copy-Item 'target/release/resources' $stage -Recurse -Force
           }
 
-          New-Item -ItemType Directory -Path 'portable-assets' -Force | Out-Null
-          $zip = "portable-assets/Cockpit.Tools_${version}-lite_x64-portable.zip"
+          New-Item -ItemType Directory -Path 'release-assets' -Force | Out-Null
+          $zip = "release-assets/Cockpit.Tools_${version}-lite_x64-portable.zip"
           Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
-          Write-Host "archive: $zip ($([math]::Round((Get-Item $zip).Length/1MB,2)) MB)"
+          Write-Host "portable: $zip ($([math]::Round((Get-Item $zip).Length/1MB,2)) MB)"
 
-      - name: 📤 Upload Windows artifact
+      - name: 📦 Collect installers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $targets = @(
+            'target/release/bundle/nsis/*.exe',
+            'target/release/bundle/msi/*.msi'
+          )
+          foreach ($pattern in $targets) {
+            $files = Get-ChildItem $pattern -File -ErrorAction SilentlyContinue
+            if (-not $files) { Write-Warning "no files for $pattern"; continue }
+            foreach ($f in $files) {
+              Copy-Item $f.FullName 'release-assets' -Force
+              Write-Host "installer: $($f.Name) ($([math]::Round($f.Length/1MB,2)) MB)"
+            }
+          }
+          Get-ChildItem 'release-assets' | Select-Object Name,Length | Format-Table -AutoSize
+
+      - name: 📤 Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: portable-windows
-          path: portable-assets/*.zip
+          name: release-windows
+          path: release-assets/*
           if-no-files-found: error
           retention-days: 30
 
-  macos-portable:
-    name: 🍎 macOS universal portable app
+  macos-release:
+    name: 🍎 macOS (portable .app + .dmg)
     runs-on: macos-latest
     steps:
       - name: 📥 Checkout repository
@@ -118,22 +137,21 @@ jobs:
           workspaces: ". -> target"
           key: macos-universal
 
-      - name: 🏗️ Build universal .app
-        run: npx tauri build --ci --config src-tauri/tauri.ci.conf.json --target universal-apple-darwin --bundles app
+      - name: 🏗️ Build universal .app and .dmg
+        run: npx tauri build --ci --config src-tauri/tauri.ci.conf.json --target universal-apple-darwin --bundles app,dmg
 
       - name: 🔏 Ad-hoc codesign
         run: |
           set -euo pipefail
           APP="target/universal-apple-darwin/release/bundle/macos/Cockpit Tools.app"
           if [ ! -d "$APP" ]; then
-            echo "app bundle not found, searching..."
             APP=$(find target -maxdepth 6 -type d -name '*.app' | head -n 1)
           fi
           test -n "$APP"
           echo "signing: $APP"
           codesign --force --deep --sign - "$APP"
 
-      - name: 🧳 Package .app as zip
+      - name: 🧳 Package .app and collect dmg
         id: pkg
         run: |
           set -euo pipefail
@@ -143,24 +161,25 @@ jobs:
             APP=$(find target -maxdepth 6 -type d -name '*.app' | head -n 1)
           fi
           test -n "$APP"
-          mkdir -p portable-assets
-          ZIP="portable-assets/Cockpit.Tools_${VERSION}-lite_universal-macos.zip"
+          mkdir -p release-assets
+          ZIP="release-assets/Cockpit.Tools_${VERSION}-lite_universal-macos.zip"
           # ditto 保留符号链接、权限和扩展属性，普通 zip 会破坏 .app 结构
           ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
-          ls -lh portable-assets
+          find target -maxdepth 6 -name '*.dmg' -exec cp {} release-assets/ \;
+          ls -lh release-assets
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: 📤 Upload macOS artifact
+      - name: 📤 Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: portable-macos
-          path: portable-assets/*.zip
+          name: release-macos
+          path: release-assets/*
           if-no-files-found: error
           retention-days: 30
 
   publish:
     name: 🏷️ Publish release
-    needs: [windows-portable, macos-portable]
+    needs: [windows-release, macos-release]
     if: ${{ inputs.publish_release }}
     runs-on: ubuntu-latest
     steps:
@@ -188,13 +207,18 @@ jobs:
           body: |
             精简版构建：侧边栏只保留 **Codex** 与 **Antigravity(Gemini)**，外加仪表盘 / 日志 / 设置。
 
-            | 平台 | 文件 | 说明 |
+            | 平台 | 文件 | 适用场景 |
             |---|---|---|
-            | Windows | `*-x64-portable.zip` | 解压即用，需 WebView2（Win11 内置） |
-            | macOS | `*-universal-macos.zip` | Universal（Intel + Apple Silicon），解压后拖到「应用程序」 |
+            | Windows | `*_x64-setup.exe` | **安装版**（NSIS，可选安装目录、创建快捷方式） |
+            | Windows | `*_x64_en-US.msi` | **安装版**（MSI，适合批量部署） |
+            | Windows | `*-x64-portable.zip` | **便携版**，解压即用，需 WebView2（Win11 内置） |
+            | macOS | `*_universal.dmg` | **安装版**（Intel + Apple Silicon） |
+            | macOS | `*_universal-macos.zip` | **便携版**（.app 直接拖进「应用程序」） |
 
-            **macOS 首次运行**：应用未签名，若提示「已损坏」或「无法验证开发者」，执行
-            `xattr -cr /Applications/Cockpit\ Tools.app` 后再次打开，或右键 → 打开。
+            **未签名说明**
+            - Windows 安装包无数字签名，SmartScreen 会提示「未知发布者」，选「更多信息 → 仍要运行」。
+            - macOS 未公证，首次打开若提示「已损坏」，执行
+              `xattr -cr /Applications/Cockpit\ Tools.app`，或右键 → 打开。
 
             > 修改自 [jlcodes99/cockpit-tools](https://github.com/jlcodes99/cockpit-tools)，仅供个人使用。
           files: dist/*
