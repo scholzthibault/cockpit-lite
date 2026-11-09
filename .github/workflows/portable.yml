@@ -37,11 +37,31 @@ jobs:
         with:
           workspaces: ". -> target"
 
+      # Tauri 在 bundle 阶段需要联网下载 WiX / NSIS 工具链，
+      # GitHub 偶发 504 会导致整次构建失败；缓存后命中的运行不再下载。
+      - name: 🗃️ Cache Tauri bundler tools
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\tauri
+          key: tauri-bundler-tools-windows-v1
+
       # tauri.ci.conf.json 关闭 createUpdaterArtifacts，
       # 因此不需要 TAURI_SIGNING_PRIVATE_KEY。
       # targets 默认 all -> Windows 产出 nsis(setup.exe) + msi
       - name: 🏗️ Build application and installers
-        run: npx tauri build --ci --config src-tauri/tauri.ci.conf.json
+        shell: pwsh
+        run: |
+          for ($i = 1; $i -le 3; $i++) {
+            Write-Host "=== tauri build attempt $i ==="
+            npx tauri build --ci --config src-tauri/tauri.ci.conf.json
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "build succeeded on attempt $i"
+              exit 0
+            }
+            Write-Warning "attempt $i failed (exit $LASTEXITCODE) - bundler tool download may have failed; retrying"
+            Start-Sleep -Seconds 25
+          }
+          throw "tauri build failed after 3 attempts"
 
       # 上游 build_windows_portable.cjs 只收 target/release/resources，
       # 会把 bundle.resources（图标/许可证/连桥脚本）漏掉。
@@ -138,7 +158,19 @@ jobs:
           key: macos-universal
 
       - name: 🏗️ Build universal .app and .dmg
-        run: npx tauri build --ci --config src-tauri/tauri.ci.conf.json --target universal-apple-darwin --bundles app,dmg
+        run: |
+          set -uo pipefail
+          for i in 1 2 3; do
+            echo "=== tauri build attempt $i ==="
+            if npx tauri build --ci --config src-tauri/tauri.ci.conf.json --target universal-apple-darwin --bundles app,dmg; then
+              echo "build succeeded on attempt $i"
+              exit 0
+            fi
+            echo "attempt $i failed; retrying in 20s"
+            sleep 20
+          done
+          echo "tauri build failed after 3 attempts"
+          exit 1
 
       - name: 🔏 Ad-hoc codesign
         run: |
