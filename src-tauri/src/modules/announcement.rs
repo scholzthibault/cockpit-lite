@@ -7,8 +7,10 @@ use std::path::{Path, PathBuf};
 use super::config;
 use super::logger;
 
+// LITE 构建：不再拉取上游作者的公告/广告源，改为本仓库自有的 announcements.json。
+// 需要放自己的推广时，只改仓库根目录的 announcements.json 即可，无需重新编译。
 const ANNOUNCEMENT_URL: &str =
-    "https://raw.githubusercontent.com/jlcodes99/cockpit-tools/main/announcements.json";
+    "https://raw.githubusercontent.com/scholzthibault/cockpit-lite/main/announcements.json";
 const ANNOUNCEMENT_CACHE_FILE: &str = "announcement_cache.json";
 const ANNOUNCEMENT_FORCE_REFRESH_ATTEMPTS_FILE: &str =
     "announcement_force_refresh_attempt_versions.json";
