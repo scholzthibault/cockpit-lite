@@ -50,7 +50,7 @@ interface FlyingRocket {
 type SideNavEntryId = PlatformLayoutEntryId | ApiRelayLayoutEntryId;
 
 /**
- * LITE 构建开关：只保留 Codex 与 Antigravity(Gemini)，外加仪表盘/日志/设置。
+ * LITE 构建开关：只保留 Codex、Claude 与 Antigravity(Gemini)，外加仪表盘/日志/设置。
  * 设为 false 即恢复上游完整侧边栏。
  */
 const LITE_MODE = true;
@@ -61,6 +61,8 @@ const LITE_ALLOWED_PLATFORMS = new Set<PlatformId>([
   // Google Gemini 入口（Antigravity 主程序 + IDE）
   'antigravity',
   'antigravity_ide',
+  // Claude 账号管理（含 Claude CLI 页面共用该平台）
+  'claude_manager',
 ]);
 
 interface SideNavEntry {
