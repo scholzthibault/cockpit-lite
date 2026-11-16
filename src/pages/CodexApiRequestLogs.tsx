@@ -1,13 +1,15 @@
 import { resolveCodexAccountReferenceDisplayName } from "../utils/codexAccountDisplayName";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useDurableUiSetting } from "../hooks/useDurableUiSetting";
+import { previewDurableUiSetting, readDurableUiSetting } from "../utils/durableUiSettings";
 import { CodexOutputSpeed } from "../components/codex/CodexOutputSpeed";
 import { aggregateOutputSpeed, formatOutputSpeed } from "../utils/codexOutputSpeed";
-import { Check, CircleAlert, Columns3, Route, Zap } from "lucide-react";
+import { Check, CircleAlert, Columns3, Route, SlidersHorizontal, Zap } from "lucide-react";
 import { SingleSelectDropdown } from "../components/SingleSelectDropdown";
 import { PaginationControls } from "../components/PaginationControls";
 import { CodexRequestProxyLabel } from "../components/codex/CodexRequestProxyLabel";
 import { CodexRequestDetailModal } from "../components/codex/CodexRequestDetailModal";
-import { authorizationFallbackReasonKey, authorizationFallbackSummaryKey, hasRequestFirstResponse, recordedServiceTierAdaptation, requestAuthorizationRouteKey, requestServiceTierPresentation, requestedServiceTierLabelKey } from "../utils/codexRequestDiagnostics";
+import { authorizationFallbackReasonKey, authorizationFallbackSummaryKey, hasRequestFirstResponse, recordedServiceTierAdaptation, requestAuthorizationRouteKey, requestedServiceTierLabelKey } from "../utils/codexRequestDiagnostics";
 import { resolveCodexApiServiceLogModelPair } from "../utils/codexApiServiceLogModel";
 import type { CodexLocalAccessUsageEvent } from "../types/codexLocalAccess";
 import type { RequestLogKindFilter, RequestLogStatusFilter } from "./CodexApiServicePage";
@@ -35,9 +37,9 @@ const DEFAULT_LOG_COLUMNS: LogColumn[] = LOG_COLUMNS
   .filter(({ id }) => id !== "proxy" && id !== "requestId")
   .map(({ id }) => id);
 
-function readLogColumns(): LogColumn[] {
+function readLogColumns(raw: string | null): LogColumn[] {
   try {
-    const stored: unknown = JSON.parse(localStorage.getItem(LOG_COLUMNS_STORAGE_KEY) || "null");
+    const stored: unknown = JSON.parse(raw || "null");
     if (Array.isArray(stored)) {
       const selected = LOG_COLUMNS.filter(({ id }) => stored.includes(id)).map(({ id }) => id);
       return selected.some((id) => id === "model" || id === "result") ? selected : ["model", ...selected];
@@ -71,6 +73,8 @@ type Props = Pick<CodexApiServiceViewProps,
   "requestLogEvents" |
   "requestLogInstanceOptions" |
   "requestLogInstanceQuery" |
+  "requestLogSourceKind" |
+  "requestLogPeerIp" |
   "requestLogKindFilter" |
   "requestLogKindOptions" |
   "requestLogLoaded" |
@@ -89,6 +93,8 @@ type Props = Pick<CodexApiServiceViewProps,
   "setRequestLogApiKeyQuery" |
   "setRequestLogErrorQuery" |
   "setRequestLogInstanceQuery" |
+  "setRequestLogSourceKind" |
+  "setRequestLogPeerIp" |
   "setRequestLogKindFilter" |
   "setRequestLogModelQuery" |
   "setRequestLogSessionQuery" |
@@ -122,6 +128,8 @@ export function CodexApiRequestLogs(props: Props) {
     requestLogEvents,
     requestLogInstanceOptions,
     requestLogInstanceQuery,
+    requestLogSourceKind,
+    requestLogPeerIp,
     requestLogKindFilter,
     requestLogKindOptions,
     requestLogLoaded,
@@ -140,6 +148,8 @@ export function CodexApiRequestLogs(props: Props) {
     setRequestLogApiKeyQuery,
     setRequestLogErrorQuery,
     setRequestLogInstanceQuery,
+    setRequestLogSourceKind,
+    setRequestLogPeerIp,
     setRequestLogKindFilter,
     setRequestLogModelQuery,
     setRequestLogSessionQuery,
@@ -149,155 +159,209 @@ export function CodexApiRequestLogs(props: Props) {
     t,
     truncateRequestLogErrorDetail
   } = props;
+  const sourceLabels = {
+    all: t("codex.apiService.logs.allSources"),
+    local: t("codex.apiService.logs.sourceLocal"),
+    lan: t("codex.apiService.logs.sourceLan"),
+    remote: t("codex.apiService.logs.sourceRemote"),
+    unknown: t("common.unknown"),
+  };
   const [selectedRequest, setSelectedRequest] = useState<CodexLocalAccessUsageEvent | null>(null);
-  const [visibleColumns, setVisibleColumns] = useState<LogColumn[]>(readLogColumns);
+  const visibleColumns = readLogColumns(useDurableUiSetting(LOG_COLUMNS_STORAGE_KEY));
   const [columnSettingsOpen, setColumnSettingsOpen] = useState(false);
+  const activeAdvancedFilterCount = [
+    (requestLogSessionQuery ?? "").trim(),
+    (requestLogApiKeyQuery ?? "").trim(),
+    (requestLogInstanceQuery ?? "").trim(),
+    requestLogSourceKind && requestLogSourceKind !== "all" ? requestLogSourceKind : "",
+    (requestLogPeerIp ?? "").trim(),
+    (requestLogErrorQuery ?? "").trim(),
+  ].filter(Boolean).length;
+  const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(
+    () => activeAdvancedFilterCount > 0,
+  );
+  useEffect(() => {
+    if (activeAdvancedFilterCount > 0) {
+      setAdvancedFiltersOpen(true);
+    }
+  }, [activeAdvancedFilterCount]);
   const columnVisible = (column: LogColumn) => visibleColumns.includes(column);
   const columnRequired = (column: LogColumn) => (column === "model" || column === "result") &&
     columnVisible(column) && !columnVisible(column === "model" ? "result" : "model");
   const activeColumns = LOG_COLUMNS.filter(({ id }) => columnVisible(id));
   const toggleColumn = (column: LogColumn) => {
-    setVisibleColumns((current) => {
-      if ((column === "model" || column === "result") && current.includes(column) &&
-        !current.includes(column === "model" ? "result" : "model")) return current;
-      const next = LOG_COLUMNS.filter(({ id }) => id === column ? !current.includes(id) : current.includes(id)).map(({ id }) => id);
-      try {
-        localStorage.setItem(LOG_COLUMNS_STORAGE_KEY, JSON.stringify(next));
-      } catch {
-        // 存储不可用不应阻止本次列切换。
-      }
-      return next;
-    });
+    const current = readLogColumns(readDurableUiSetting(LOG_COLUMNS_STORAGE_KEY));
+    if ((column === "model" || column === "result") && current.includes(column) &&
+        !current.includes(column === "model" ? "result" : "model")) return;
+    const next = LOG_COLUMNS.filter(({ id }) => id === column ? !current.includes(id) : current.includes(id)).map(({ id }) => id);
+    previewDurableUiSetting(LOG_COLUMNS_STORAGE_KEY, JSON.stringify(next));
   };
   const pageSpeed = aggregateOutputSpeed(requestLogEvents);
   const pageSpeedValue = formatOutputSpeed(pageSpeed.tokensPerSecond);
   const initialLoading = requestLogLoading && !requestLogLoaded;
   return (
               <>
-                <div className="codex-api-service-log-filters">
-                  <label>
-                    <span>{t("codex.apiService.logs.sessionFilter")}</span>
-                    <input
-                      value={requestLogSessionQuery}
-                      onChange={(event) => setRequestLogSessionQuery(event.target.value)}
-                      placeholder={t("codex.apiService.logs.sessionPlaceholder")}
-                    />
-                  </label>
-                  <label>
-                    <span>
-                      {t("codex.apiService.logs.modelFilter", "模型")}
-                    </span>
-                    <input
-                      value={requestLogModelQuery}
-                      onChange={(event) =>
-                        setRequestLogModelQuery(event.target.value)
-                      }
-                      placeholder={t(
-                        "codex.apiService.logs.modelPlaceholder",
-                        "Model ID",
-                      )}
-                    />
-                  </label>
-                  <label>
-                    <span>
-                      {t("codex.apiService.logs.accountFilter", "Account")}
-                    </span>
-                    <input
-                      value={requestLogAccountQuery}
-                      onChange={(event) =>
-                        setRequestLogAccountQuery(event.target.value)
-                      }
-                      placeholder={t(
-                        "codex.apiService.logs.accountPlaceholder",
-                        "Email or account ID",
-                      )}
-                    />
-                  </label>
-                  <label>
-                    <span>
-                      {t("codex.apiService.logs.apiKeyFilter", "API Key")}
-                    </span>
-                    <input
-                      value={requestLogApiKeyQuery}
-                      onChange={(event) =>
-                        setRequestLogApiKeyQuery(event.target.value)
-                      }
-                      placeholder={t(
-                        "codex.apiService.logs.apiKeyPlaceholder",
-                        "Name or ID",
-                      )}
-                    />
-                  </label>
-                  <label>
-                    <span>
-                      {t("codex.apiService.logs.instanceFilter", "Instance")}
-                    </span>
-                    <SingleSelectDropdown
-                      value={requestLogInstanceQuery}
-                      options={requestLogInstanceOptions}
-                      onChange={setRequestLogInstanceQuery}
-                      ariaLabel={t(
-                        "codex.apiService.logs.instanceFilter",
-                        "Instance",
-                      )}
-                      placeholder={t(
-                        "codex.apiService.logs.allInstances",
-                        "All Instances",
-                      )}
-                    />
-                  </label>
-                  <label>
-                    <span>{t("codex.apiService.logs.kindFilter", "Type")}</span>
-                    <SingleSelectDropdown
-                      value={requestLogKindFilter}
-                      options={requestLogKindOptions}
-                      onChange={(value) =>
-                        setRequestLogKindFilter(value as RequestLogKindFilter)
-                      }
-                      ariaLabel={t("codex.apiService.logs.kindFilter", "Type")}
-                    />
-                  </label>
-                  <label>
-                    <span>
-                      {t("codex.apiService.logs.statusFilter", "Status")}
-                    </span>
-                    <SingleSelectDropdown
-                      value={requestLogStatusFilter}
-                      options={requestLogStatusOptions}
-                      onChange={(value) =>
-                        setRequestLogStatusFilter(
-                          value as RequestLogStatusFilter,
-                        )
-                      }
-                      ariaLabel={t(
-                        "codex.apiService.logs.statusFilter",
-                        "Status",
-                      )}
-                    />
-                  </label>
-                  <label>
-                    <span>
-                      {t("codex.apiService.logs.errorFilter", "Error")}
-                    </span>
-                    <input
-                      value={requestLogErrorQuery}
-                      onChange={(event) =>
-                        setRequestLogErrorQuery(event.target.value)
-                      }
-                      placeholder={t(
-                        "codex.apiService.logs.errorPlaceholder",
-                        "Error category",
-                      )}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    onClick={clearRequestLogFilters}
-                    disabled={!hasRequestLogFilters}
-                  >
-                    {t("codex.apiService.logs.clearFilters", "Clear Filters")}
-                  </button>
+                <div className="codex-api-service-log-filters-shell">
+                  <div className="codex-api-service-log-filters codex-api-service-log-filters-primary">
+                    <label>
+                      <span>
+                        {t("codex.apiService.logs.modelFilter", "模型")}
+                      </span>
+                      <input
+                        value={requestLogModelQuery}
+                        onChange={(event) =>
+                          setRequestLogModelQuery(event.target.value)
+                        }
+                        placeholder={t(
+                          "codex.apiService.logs.modelPlaceholder",
+                          "Model ID",
+                        )}
+                      />
+                    </label>
+                    <label>
+                      <span>
+                        {t("codex.apiService.logs.accountFilter", "Account")}
+                      </span>
+                      <input
+                        value={requestLogAccountQuery}
+                        onChange={(event) =>
+                          setRequestLogAccountQuery(event.target.value)
+                        }
+                        placeholder={t("codex.apiService.logs.accountPlaceholder")}
+                      />
+                    </label>
+                    <label>
+                      <span>{t("codex.apiService.logs.kindFilter", "Type")}</span>
+                      <SingleSelectDropdown
+                        value={requestLogKindFilter}
+                        options={requestLogKindOptions}
+                        onChange={(value) =>
+                          setRequestLogKindFilter(value as RequestLogKindFilter)
+                        }
+                        ariaLabel={t("codex.apiService.logs.kindFilter", "Type")}
+                      />
+                    </label>
+                    <label>
+                      <span>
+                        {t("codex.apiService.logs.statusFilter", "Status")}
+                      </span>
+                      <SingleSelectDropdown
+                        value={requestLogStatusFilter}
+                        options={requestLogStatusOptions}
+                        onChange={(value) =>
+                          setRequestLogStatusFilter(
+                            value as RequestLogStatusFilter,
+                          )
+                        }
+                        ariaLabel={t(
+                          "codex.apiService.logs.statusFilter",
+                          "Status",
+                        )}
+                      />
+                    </label>
+                    <div className="codex-request-log-filter-actions">
+                      <button
+                        type="button"
+                        className={`btn btn-secondary btn-sm${advancedFiltersOpen ? " is-active" : ""}`}
+                        onClick={() => setAdvancedFiltersOpen((open) => !open)}
+                        aria-expanded={advancedFiltersOpen}
+                      >
+                        <SlidersHorizontal size={13} />
+                        {t("codex.apiService.logs.moreFilters", "更多筛选")}
+                        {activeAdvancedFilterCount > 0 && (
+                          <span className="codex-request-log-filter-badge">
+                            {activeAdvancedFilterCount}
+                          </span>
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={clearRequestLogFilters}
+                        disabled={!hasRequestLogFilters}
+                      >
+                        {t("codex.apiService.logs.clearFilters", "Clear Filters")}
+                      </button>
+                    </div>
+                  </div>
+                  {advancedFiltersOpen && (
+                    <div className="codex-api-service-log-filters codex-api-service-log-filters-secondary">
+                      <label>
+                        <span>{t("codex.apiService.logs.sessionFilter")}</span>
+                        <input
+                          value={requestLogSessionQuery}
+                          onChange={(event) => setRequestLogSessionQuery(event.target.value)}
+                          placeholder={t("codex.apiService.logs.sessionPlaceholder")}
+                        />
+                      </label>
+                      <label>
+                        <span>
+                          {t("codex.apiService.logs.apiKeyFilter", "API Key")}
+                        </span>
+                        <input
+                          value={requestLogApiKeyQuery}
+                          onChange={(event) =>
+                            setRequestLogApiKeyQuery(event.target.value)
+                          }
+                          placeholder={t(
+                            "codex.apiService.logs.apiKeyPlaceholder",
+                            "Name or ID",
+                          )}
+                        />
+                      </label>
+                      <label>
+                        <span>
+                          {t("codex.apiService.logs.instanceFilter", "Instance")}
+                        </span>
+                        <SingleSelectDropdown
+                          value={requestLogInstanceQuery}
+                          options={requestLogInstanceOptions}
+                          onChange={setRequestLogInstanceQuery}
+                          ariaLabel={t(
+                            "codex.apiService.logs.instanceFilter",
+                            "Instance",
+                          )}
+                          placeholder={t(
+                            "codex.apiService.logs.allInstances",
+                            "All Instances",
+                          )}
+                        />
+                      </label>
+                      <label>
+                        <span>{t("codex.apiService.logs.connectionSource")}</span>
+                        <SingleSelectDropdown
+                          value={requestLogSourceKind}
+                          options={Object.entries(sourceLabels).map(([value, label]) => ({ value, label }))}
+                          onChange={setRequestLogSourceKind}
+                          ariaLabel={t("codex.apiService.logs.connectionSource")}
+                        />
+                      </label>
+                      <label>
+                        <span>{t("codex.apiService.logs.peerIp")}</span>
+                        <input
+                          value={requestLogPeerIp}
+                          onChange={(event) => setRequestLogPeerIp(event.target.value)}
+                          spellCheck={false}
+                          placeholder="192.168.1.10"
+                        />
+                      </label>
+                      <label>
+                        <span>
+                          {t("codex.apiService.logs.errorFilter", "Error")}
+                        </span>
+                        <input
+                          value={requestLogErrorQuery}
+                          onChange={(event) =>
+                            setRequestLogErrorQuery(event.target.value)
+                          }
+                          placeholder={t(
+                            "codex.apiService.logs.errorPlaceholder",
+                            "Error category",
+                          )}
+                        />
+                      </label>
+                    </div>
+                  )}
                 </div>
                 <div className="codex-request-log-toolbar">
                   {requestLogEvents.length > 0 && <div className="codex-output-speed-summary" title={t("common.outputSpeed.pageHint")}>
@@ -363,9 +427,8 @@ export function CodexApiRequestLogs(props: Props) {
                         const errorDetail = truncateRequestLogErrorDetail(fullErrorDetail);
                         const accountDisplayName = resolveCodexAccountReferenceDisplayName(event.accountId, event.email, accountDisplayNames, t("common.apiKeyAccount")) || "—";
                         const maskedAccount = maskAccountText(accountDisplayName);
-                        const tiers = requestServiceTierPresentation(event);
                         const adaptation = recordedServiceTierAdaptation(event.serviceTierAdaptation);
-                        const originalTier = adaptation?.requestedTier ?? tiers.requested;
+                        const originalTier = adaptation?.requestedTier ?? event.requestedServiceTier?.trim() ?? "";
                         const originalTierKey = requestedServiceTierLabelKey(originalTier);
                         const requestedTier = originalTier.toLowerCase();
                         const speed = ["priority", "fast"].includes(requestedTier) ? "fast"
@@ -376,6 +439,9 @@ export function CodexApiRequestLogs(props: Props) {
                         const apiKeyLabel = event.apiKeyId === INTERNAL_API_KEY_ID
                           ? t("codex.localAccess.internalSchedulerLabel", "Internal scheduler")
                           : event.apiKeyLabel || event.apiKeyId || "—";
+                        const connectionLabel = event.connectionSource
+                          ? `${sourceLabels[event.connectionSource.kind]} · ${event.connectionSource.peerIp}`
+                          : sourceLabels.unknown;
                         const instanceLabel = resolveClientInstanceLabel(event.clientInstanceId, codexInstances, t);
                         return <tr key={`${event.timestamp}-${event.requestId || event.apiKeyId}-${index}`}>
                           {columnVisible("time") && <td><span className="codex-request-log-time">{formatDateTime(event.timestamp)}</span></td>}
@@ -388,7 +454,7 @@ export function CodexApiRequestLogs(props: Props) {
                                 {event.reasoningEffort && <span className="codex-api-service-pill muted" title={t("codex.apiService.logs.reasoningEffort", "思考强度")}>{event.reasoningEffort}</span>}
                                 {adaptation ? <span className="codex-request-log-speed standard adjusted" title={t("codex.apiService.logs.officialDefaultSpeed")}>
                                   {t("codex.apiService.logs.speedAdjusted", { tier: originalTierKey ? t(originalTierKey) : originalTier })}
-                                </span> : speed && <span className={`codex-request-log-speed ${speed}`} title={t("codex.apiService.logs.serviceTierHint")}>
+                                </span> : speed && <span className={`codex-request-log-speed ${speed}`} title={t("codex.apiService.logs.requestedTier", { tier: t(`codex.speed.${speed}`) })}>
                                   {speed !== "standard" && <Zap size={12} aria-hidden="true" />}
                                   {t(`codex.speed.${speed}`)}
                                 </span>}
@@ -404,6 +470,7 @@ export function CodexApiRequestLogs(props: Props) {
                             </div>
                           </td>}
                           {columnVisible("source") && <td><div className="codex-request-log-stack">
+                            <span className="codex-request-log-truncate" title={connectionLabel}><span className="codex-request-log-label">{t("codex.apiService.logs.connectionSource")}</span> {connectionLabel}</span>
                             <span className="codex-request-log-truncate" title={`${t("codex.apiService.logs.apiKeyFilter", "API Key")}: ${apiKeyLabel}`}><span className="codex-request-log-label">{t("codex.apiService.logs.apiKeyFilter", "API Key")}</span> {apiKeyLabel}</span>
                             <span className="codex-request-log-truncate" title={event.clientInstanceId ? `${instanceLabel} (${event.clientInstanceId})` : instanceLabel}><span className="codex-request-log-label">{t("codex.apiService.logs.instanceFilter", "Instance")}</span> {instanceLabel}</span>
                             <span className="codex-request-log-truncate" title={t(requestAuthorizationRouteKey(event.accountId, event.authorizationRoute))}><span className="codex-request-log-label">{t("codex.requestDiagnostics.authorizationRoute")}</span> {t(requestAuthorizationRouteKey(event.accountId, event.authorizationRoute))}</span>

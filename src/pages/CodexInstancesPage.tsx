@@ -13,7 +13,8 @@ import {
 import { useLaunchTerminalOptions } from "../hooks/useLaunchTerminalOptions";
 import { useCodexInstanceStore } from "../stores/useCodexInstanceStore";
 import { useCodexAccountStore } from "../stores/useCodexAccountStore";
-import { isCodexApiKeyAccount, type CodexAccount } from "../types/codex";
+import { useCodexRelayBalanceDisabled } from "../hooks/useCodexRelayBalanceDisabled";
+import { isCodexApiKeyAccount, isCodexNewApiAccount, type CodexAccount } from "../types/codex";
 import {
   CODEX_API_SERVICE_BIND_ID,
   CODEX_PROVIDER_GATEWAY_BIND_PREFIX,
@@ -42,9 +43,8 @@ import { useEscClose } from "../hooks/useEscClose";
 import { useCodexRemoteUsageCache } from '../hooks/useCodexRemoteUsageCache';
 import { isCodexRemoteGateway, withCodexRemotePresentation } from '../utils/codexRemotePresentation';
 import {
-  isDeepSeekAccount,
   parseCodexBoundAccountId,
-  resolveDeepSeekBindAccountId,
+  resolveCodexProviderBindAccountId,
 } from "../utils/codexDeepSeekAccess";
 import {
   isPrivacyModeEnabledByDefault,
@@ -72,7 +72,8 @@ interface CodexLaunchModalState {
   instanceName: string;
   switchMessage: string;
   baseLaunchCommand: string;
-  launchCommand: string;
+  workingDir?: string | null;
+  accountId?: string;
   preparing: boolean;
   copied: boolean;
   executing: boolean;
@@ -136,7 +137,6 @@ export function CodexInstancesContent({
     tone?: "error";
   } | null>(null);
 
-  useEscClose(!!launchModal, () => setLaunchModal(null));
   useEscClose(showSyncSettingsModal, () => setShowSyncSettingsModal(false));
   useEffect(
     () => () => {
@@ -187,11 +187,16 @@ export function CodexInstancesContent({
     };
   }, []);
 
+  const relayBalanceDisabled = useCodexRelayBalanceDisabled();
   const resolvePresentation = useCallback((account: CodexAccount) => {
     // Read planBadgeStyle so style event rebuilds badge classes on instances.
     void planBadgeStyle;
+    const basePresentation = buildCodexAccountPresentation(account, t);
+    if (relayBalanceDisabled && isCodexNewApiAccount(account)) {
+      basePresentation.quotaItems = [];
+    }
     const presentation = withCodexRemotePresentation(account,
-      buildCodexAccountPresentation(account, t), remoteUsage[account.id]?.summary,
+      basePresentation, remoteUsage[account.id]?.summary,
       t('common.apiBudget.gatewayName'));
     return {
       ...presentation,
@@ -202,7 +207,7 @@ export function CodexInstancesContent({
         return true;
       }),
     };
-  }, [remoteUsage, t, planBadgeStyle, showCodeReviewQuota, showAdditionalQuota]);
+  }, [relayBalanceDisabled, remoteUsage, t, planBadgeStyle, showCodeReviewQuota, showAdditionalQuota]);
 
   const accountsWithDisplayName = useMemo(
     () =>
@@ -302,19 +307,19 @@ export function CodexInstancesContent({
       let launchAccount = account;
       if (
         account &&
-        isDeepSeekAccount(account) &&
-        launchOptions?.deepSeekAccessMode
+        isCodexApiKeyAccount(account) &&
+        launchOptions?.providerAccessMode
       ) {
         launchAccount = await updateAccountInstanceAccess(
           account.id,
-          launchOptions.deepSeekAccessMode,
+          launchOptions.providerAccessMode,
           null,
-          launchOptions.imageGenerationAccountIds ?? [],
-            launchOptions.imageGenerationAccountModels ?? {},
+          launchOptions.imageGenerationAccountIds,
+            launchOptions.imageGenerationAccountModels,
         );
       }
-      if (launchAccount && isDeepSeekAccount(launchAccount)) {
-        const nextBindId = resolveDeepSeekBindAccountId(launchAccount);
+      if (launchAccount && launchOptions?.providerAccessMode) {
+        const nextBindId = resolveCodexProviderBindAccountId(launchAccount);
         if ((instance.bindAccountId || null) !== nextBindId) {
           await instanceStore.updateInstance({
             instanceId: instance.id,
@@ -380,7 +385,7 @@ export function CodexInstancesContent({
   const renderCodexPlanBadge = (account: CodexAccount) => {
     const presentation = resolvePresentation(account);
     return (
-      <span className={`instance-plan-badge ${presentation.planClass}`}>
+      <span className={`tier-badge codex-account-plan-badge ${presentation.planClass}`}>
         {presentation.planLabel}
       </span>
     );
@@ -403,13 +408,6 @@ export function CodexInstancesContent({
     const boundAccount = boundAccountId
       ? accountMap.get(boundAccountId)
       : undefined;
-    const accountLabel =
-      instance.bindAccountId === CODEX_API_SERVICE_BIND_ID
-        ? t("codex.localAccess.title", "API 服务")
-        : boundAccount
-          ? resolvePresentation(boundAccount).displayName ||
-            boundAccount.email
-          : null;
     const instanceName = instance.isDefault
       ? t("instances.defaultName", "默认实例")
       : instance.name || t("instances.defaultName", "默认实例");
@@ -417,11 +415,11 @@ export function CodexInstancesContent({
     setLaunchModal({
       instanceId: instance.id,
       instanceName,
-      switchMessage: accountLabel
-        ? t("codex.switched", "已切换至 {{email}}", { email: accountLabel })
-        : t("instances.messages.launchPrepared", "启动命令已准备"),
+      switchMessage: !boundAccount && instance.bindAccountId === CODEX_API_SERVICE_BIND_ID
+        ? t("codex.localAccess.title") : "",
       baseLaunchCommand: launchInfo.launchCommand,
-      launchCommand: launchInfo.terminalCommand,
+      workingDir: instance.workingDir,
+      accountId: boundAccountId ?? undefined,
       preparing: false,
       copied: false,
       executing: false,
@@ -430,12 +428,15 @@ export function CodexInstancesContent({
     });
   };
 
-  const handleCopyLaunchCommand = async () => {
+  const handleCopyLaunchCommand = async (customCommand?: string) => {
     if (!launchModal || launchModal.preparing) return;
     try {
-      await navigator.clipboard.writeText(
-        launchModal.baseLaunchCommand || launchModal.launchCommand,
-      );
+      const command = customCommand?.trim()
+        ? (await codexInstanceService.getCodexInstanceLaunchCommand(
+            launchModal.instanceId, selectedTerminal, customCommand,
+          )).launchCommand
+        : launchModal.baseLaunchCommand;
+      await navigator.clipboard.writeText(command);
       setLaunchModal((prev) => (prev ? { ...prev, copied: true } : prev));
       window.setTimeout(() => {
         setLaunchModal((prev) => (prev ? { ...prev, copied: false } : prev));
@@ -455,7 +456,7 @@ export function CodexInstancesContent({
     }
   };
 
-  const handleExecuteInTerminal = async () => {
+  const handleExecuteInTerminal = async (customCommand?: string) => {
     if (!launchModal || launchModal.preparing || launchModal.executing) return;
     setLaunchModal((prev) =>
       prev
@@ -467,6 +468,7 @@ export function CodexInstancesContent({
         await codexInstanceService.executeCodexInstanceLaunchCommand(
           launchModal.instanceId,
           selectedTerminal,
+          customCommand,
         );
       setLaunchModal((prev) =>
         prev
@@ -514,7 +516,6 @@ export function CodexInstancesContent({
             ? {
                 ...prev,
                 baseLaunchCommand: launchInfo.launchCommand,
-                launchCommand: launchInfo.terminalCommand,
                 preparing: false,
               }
             : prev,
@@ -637,6 +638,14 @@ export function CodexInstancesContent({
     </div>
   );
 
+  const cliLaunchAccount = launchModal?.accountId ? accountMap.get(launchModal.accountId) : undefined;
+  const cliLaunchAccountLabel = cliLaunchAccount
+    ? maskSensitiveValue(
+        resolvePresentation(cliLaunchAccount).displayName || cliLaunchAccount.email,
+        isPrivacyModeEnabledByDefault(),
+      )
+    : undefined;
+
   return (
     <>
       <div className="codex-instances-content">
@@ -747,7 +756,7 @@ export function CodexInstancesContent({
                       />
                       <span>
                         {syncingAllRecords
-                          ? t("common.syncing", "同步中...")
+                          ? t("common.syncing")
                           : t(
                               "codex.instances.syncAllRecords.action",
                               "同步所有实例记录",
@@ -791,10 +800,15 @@ export function CodexInstancesContent({
           subjectLabel={t("instances.columns.instance", "实例")}
           subjectValue={launchModal.instanceName}
           statusMessage={launchModal.switchMessage}
+          account={cliLaunchAccount && cliLaunchAccountLabel ? {
+            label: cliLaunchAccountLabel,
+            badge: renderCodexPlanBadge(cliLaunchAccount),
+          } : undefined}
+          displayWorkingDir={launchModal.workingDir ?? undefined}
           terminal={selectedTerminal}
           terminalOptions={terminalOptions}
           onTerminalChange={setSelectedTerminal}
-          command={launchModal.launchCommand}
+          command={launchModal.baseLaunchCommand}
           preparing={launchModal.preparing}
           copied={launchModal.copied}
           executing={launchModal.executing}
@@ -802,8 +816,8 @@ export function CodexInstancesContent({
           errorMessage={launchModal.executeError}
           onBack={() => setLaunchModal(null)}
           onClose={() => setLaunchModal(null)}
-          onCopy={() => void handleCopyLaunchCommand()}
-          onExecute={() => void handleExecuteInTerminal()}
+          onCopy={handleCopyLaunchCommand}
+          onExecute={(command) => void handleExecuteInTerminal(command)}
         />
       )}
       {launchPreview && (

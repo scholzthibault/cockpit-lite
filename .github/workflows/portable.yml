@@ -237,7 +237,7 @@ jobs:
           tag_name: v${{ steps.ver.outputs.version }}-lite
           name: Cockpit Tools ${{ steps.ver.outputs.version }} Lite
           body: |
-            精简版构建：侧边栏只保留 **Codex** 与 **Antigravity(Gemini)**，外加仪表盘 / 日志 / 设置。
+            精简版构建：侧边栏只保留 **Codex**、**Claude** 与 **Antigravity(Gemini)**，外加仪表盘 / 日志 / 设置。
 
             | 平台 | 文件 | 适用场景 |
             |---|---|---|
@@ -246,6 +246,10 @@ jobs:
             | Windows | `*-x64-portable.zip` | **便携版**，解压即用，需 WebView2（Win11 内置） |
             | macOS | `*_universal.dmg` | **安装版**（Intel + Apple Silicon） |
             | macOS | `*_universal-macos.zip` | **便携版**（.app 直接拖进「应用程序」） |
+
+            **精简说明**
+            - 移除上游作者的公告/推广源，改为本仓库自有配置（`announcements.json`）。
+            - Windows 进程探测超时由 5s 放宽到 25s，避免高负载机器上切号误判失败。
 
             **未签名说明**
             - Windows 安装包无数字签名，SmartScreen 会提示「未知发布者」，选「更多信息 → 仍要运行」。
