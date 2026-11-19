@@ -1,7 +1,9 @@
 const ZH_SECTION_HEADER = '## 更新日志（中文）';
 const EN_SECTION_HEADER = '## Changelog (English)';
-const GITHUB_RELEASE_TAG_BASE_URL =
-  'https://github.com/jlcodes99/cockpit-tools/releases/tag/v';
+// LITE 构建：更新检查仍然读取上游发布信息（便于知道有新版本），
+// 但一切跳转/下载都指向本仓库的 Lite 发布页，绝不指向上游。
+export const LITE_RELEASES_URL =
+  'https://github.com/scholzthibault/cockpit-lite/releases/latest';
 const RELEASE_HIGHLIGHTS: Record<string, { zh: string; en: string }> = {
   '1.3.1': {
     zh: `### 重要更新
@@ -110,31 +112,12 @@ export function prependUpdaterReleaseHighlights(
   return normalizedNotes ? `${highlights}\n\n${normalizedNotes}` : highlights;
 }
 
-function getStringFromRawJson(raw: Record<string, unknown>, key: string): string {
-  const value = raw[key];
-  if (typeof value !== 'string') {
-    return '';
-  }
-  const trimmed = value.trim();
-  return trimmed;
-}
-
 export function resolveUpdaterDownloadUrl(
   version: string,
   rawJson?: Record<string, unknown>,
 ): string {
-  const raw = rawJson ?? {};
-  const preferredKeys = ['html_url', 'download_url', 'url', 'details_url'];
-  for (const key of preferredKeys) {
-    const url = getStringFromRawJson(raw, key);
-    if (url) {
-      return url;
-    }
-  }
-
-  const safeVersion = version.trim();
-  if (!safeVersion) {
-    return 'https://github.com/jlcodes99/cockpit-tools/releases/latest';
-  }
-  return `${GITHUB_RELEASE_TAG_BASE_URL}${encodeURIComponent(safeVersion)}`;
+  // LITE 构建：忽略上游 latest.json 里的任何链接，统一落到本仓库 Lite 发布页。
+  void version;
+  void rawJson;
+  return LITE_RELEASES_URL;
 }

@@ -77,7 +77,7 @@ import type {
 import type { RemoteUpdatePromptMode } from './types/remoteConfig';
 import type { Update as UpdaterUpdate } from '@tauri-apps/plugin-updater';
 import {
-  parseUpdaterReleaseNotes, resolveUpdaterDownloadUrl,
+  LITE_RELEASES_URL, parseUpdaterReleaseNotes, resolveUpdaterDownloadUrl,
 } from './utils/updaterReleaseNotes';
 import { savePendingUpdateNotes } from './services/localUpdateNotes';
 import { FloatingCardWindow } from './pages/FloatingCardWindow';
@@ -1808,7 +1808,27 @@ function MainApp() {
     expectedVersion: string,
     initialUpdate?: UpdaterUpdate,
   ) => {
-    if (updateDownloadOwnerRef.current !== 'none' || pendingSilentUpdateRef.current) {
+    // LITE 构建：禁止在应用内下载/安装上游构建（会覆盖精简版并丢失所有定制）。
+    // 更新检查仍读取上游发布信息以便获知有新版本，但"更新"动作改为在浏览器
+    // 打开本仓库的 Lite 发布页，由用户自行下载对应版本。
+    if (updateDownloadOwnerRef.current === 'none') {
+      if (initialUpdate && initialUpdate !== activeUpdateDownloadRef.current) {
+        await closeUpdaterHandle(initialUpdate);
+      }
+      writeUpdateLog('info', `LITE 构建跳过应用内更新，跳转 Lite 发布页: version=${expectedVersion}`);
+      setUpdateRetryStatus('');
+      setUpdateDownloadError('');
+      setUpdateErrorDetails('');
+      setUpdateAction({ state: 'hidden', version: null, progress: 0, requiresInstall: true });
+      try {
+        const { openUrl } = await import('@tauri-apps/plugin-opener');
+        await openUrl(LITE_RELEASES_URL);
+      } catch {
+        window.open(LITE_RELEASES_URL, '_blank');
+      }
+      return;
+    }
+    if (pendingSilentUpdateRef.current) {
       if (initialUpdate !== activeUpdateDownloadRef.current && initialUpdate !== pendingSilentUpdateRef.current) {
         await closeUpdaterHandle(initialUpdate);
       }
@@ -2404,13 +2424,10 @@ function MainApp() {
                   latestVersion: preparedUpdateInfo.latest_version,
                 });
                 openAutomaticUpdatePrompt(update.version, updatePromptMode);
-                console.log('[App] Update found, downloading silently with retry...');
-                writeUpdateLog('info', `检测到新版本，开始静默下载: version=${update.version}`);
-                const silentDownloadStartedAt = performance.now();
-                await runSharedUpdateDownload(update.version, update);
-                console.log(
-                  `[StartupPerf][UpdateCheck] silent update download finished in ${(performance.now() - silentDownloadStartedAt).toFixed(2)}ms; version=${update.version}`,
-                );
+                // LITE 构建：不做后台静默下载，也不在无人操作时弹出浏览器。
+                // 仅提示有新版本，由用户主动点击后再跳转本仓库 Lite 发布页。
+                writeUpdateLog('info', 'LITE 构建跳过静默下载，已提示新版本: version=' + update.version);
+                await closeUpdaterHandle(update);
               }
             } else {
               console.log('[App] No update available.');
