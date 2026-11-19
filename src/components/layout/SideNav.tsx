@@ -8,6 +8,7 @@ import { isMenuVisiblePlatform, PlatformId, PLATFORM_PAGE_MAP } from '../../type
 import {
   API_RELAY_LAYOUT_ENTRY_ID,
   ApiRelayLayoutEntryId,
+  makePlatformEntryId,
   resolveGroupChildIcon,
   resolveGroupChildName,
   parseGroupEntryId,
@@ -18,7 +19,7 @@ import {
   resolveEntryIdForPlatform,
   usePlatformLayoutStore,
 } from '../../stores/usePlatformLayoutStore';
-import { CLASSIC_SIDEBAR_ENTRY_LIMIT, ORIGINAL_SIDEBAR_ENTRY_LIMIT, useSideNavLayoutStore } from '../../stores/useSideNavLayoutStore';
+import { SIDEBAR_ENTRY_LIMITS, useSideNavLayoutStore } from '../../stores/useSideNavLayoutStore';
 import { useGlobalModal } from '../../hooks/useGlobalModal';
 import { getPlatformLabel, renderPlatformIcon } from '../../utils/platformMeta';
 import { useRemoteConfigStore } from '../../stores/useRemoteConfigStore';
@@ -71,6 +72,7 @@ interface SideNavEntry {
   targetPlatformId: PlatformId | null;
   platformIds: PlatformId[];
   group: PlatformLayoutGroup | null;
+  childIcon?: ReturnType<typeof resolveGroupChildIcon>;
 }
 
 const PAGE_PLATFORM_MAP: Partial<Record<Page, PlatformId>> = {
@@ -118,6 +120,19 @@ function renderEntryIcon(entry: SideNavEntry, size: number) {
     );
   }
 
+  if (entry.childIcon) {
+    const { iconKind, iconCustomDataUrl, iconPlatformId } = entry.childIcon;
+    return iconKind === 'custom' && iconCustomDataUrl ? (
+      <img
+        src={iconCustomDataUrl}
+        alt=""
+        className="side-nav-group-icon"
+        width={size}
+        height={size}
+      />
+    ) : renderPlatformIcon(iconPlatformId, size);
+  }
+
   if (entry.group && entry.group.iconKind === 'custom' && entry.group.iconCustomDataUrl) {
     return (
       <img
@@ -138,7 +153,13 @@ function renderEntryIcon(entry: SideNavEntry, size: number) {
 }
 
 function isAntigravitySuitePage(page: Page): boolean {
-  return page === 'overview' || page === 'instances' || page === 'wakeup' || page === 'verification';
+  return (
+    page === 'overview' ||
+    page === 'antigravity-usage' ||
+    page === 'instances' ||
+    page === 'wakeup' ||
+    page === 'verification'
+  );
 }
 
 export function SideNav({
@@ -201,16 +222,6 @@ export function SideNav({
   const currentPlatformId = isAntigravitySuitePage(page)
     ? 'antigravity'
     : PAGE_PLATFORM_MAP[page] ?? null;
-  const currentEntryId = useMemo<SideNavEntryId | null>(
-    () => {
-      if (page === 'api-relay') {
-        return API_RELAY_LAYOUT_ENTRY_ID;
-      }
-      return currentPlatformId ? resolveEntryIdForPlatform(currentPlatformId, platformGroups) : null;
-    },
-    [currentPlatformId, page, platformGroups],
-  );
-
   const hiddenSet = useMemo(() => new Set(hiddenEntryIds), [hiddenEntryIds]);
   const sidebarSet = useMemo(() => new Set(sidebarEntryIds), [sidebarEntryIds]);
   const remoteHiddenPlatformSet = useMemo(
@@ -309,20 +320,34 @@ export function SideNav({
     t,
   ]);
 
-  const sidebarVisibleEntries = useMemo(
-    () => orderedEntries.filter((entry) =>
-      entry.kind === 'api-relay' || sidebarSet.has(entry.id as PlatformLayoutEntryId),
-    ),
-    [orderedEntries, sidebarSet],
-  );
+  const sidebarVisibleEntries = useMemo(() => orderedEntries.flatMap((entry) => {
+    const visible = entry.kind === 'api-relay' || sidebarSet.has(entry.id as PlatformLayoutEntryId)
+      ? [entry]
+      : [];
+    const group = entry.group;
+    if (!group) return visible;
 
+    for (const platformId of entry.platformIds) {
+      const id = makePlatformEntryId(platformId);
+      if (!sidebarSet.has(id)) continue;
+      visible.push({
+        id,
+        kind: 'platform',
+        label: resolveGroupChildName(group, platformId, getPlatformLabel(platformId, t)),
+        hidden: entry.hidden,
+        targetPlatformId: platformId,
+        platformIds: [platformId],
+        group: null,
+        childIcon: resolveGroupChildIcon(group, platformId),
+      });
+    }
+    return visible;
+  }), [orderedEntries, sidebarSet, t]);
+
+  const sidebarEntryLimit = SIDEBAR_ENTRY_LIMITS[sideNavLayoutMode];
   const sidebarMenuEntries = useMemo(
-    () => (
-      isClassicLayout
-        ? sidebarVisibleEntries.slice(0, CLASSIC_SIDEBAR_ENTRY_LIMIT)
-        : sidebarVisibleEntries.slice(0, ORIGINAL_SIDEBAR_ENTRY_LIMIT)
-    ),
-    [isClassicLayout, sidebarVisibleEntries],
+    () => sidebarVisibleEntries.slice(0, sidebarEntryLimit),
+    [sidebarVisibleEntries, sidebarEntryLimit],
   );
 
   const navigateToPlatform = useCallback((platformId: PlatformId) => {
@@ -350,6 +375,15 @@ export function SideNav({
     () => new Set(sidebarMenuEntries.map((entry) => entry.id)),
     [sidebarMenuEntries],
   );
+  let currentEntryId: SideNavEntryId | null = null;
+  if (page === 'api-relay') {
+    currentEntryId = API_RELAY_LAYOUT_ENTRY_ID;
+  } else if (currentPlatformId) {
+    const individualEntryId = makePlatformEntryId(currentPlatformId);
+    currentEntryId = sidebarMenuEntryIdSet.has(individualEntryId)
+      ? individualEntryId
+      : resolveEntryIdForPlatform(currentPlatformId, platformGroups);
+  }
 
   const sidebarMenuPlatformIdSet = useMemo(
     () => new Set(
@@ -703,7 +737,7 @@ export function SideNav({
   }, [showMore]);
 
   useEffect(() => {
-    if (!showMore || !isClassicLayout) return;
+    if (!showMore) return;
 
     const updatePopoverPosition = () => {
       const button = moreButtonRef.current;
@@ -731,6 +765,7 @@ export function SideNav({
     updatePopoverPosition();
     const rafId = window.requestAnimationFrame(updatePopoverPosition);
     window.addEventListener('resize', updatePopoverPosition);
+    window.addEventListener('scroll', updatePopoverPosition, true);
     const resizeObserver = typeof ResizeObserver !== 'undefined' && morePopoverRef.current
       ? new ResizeObserver(() => {
         updatePopoverPosition();
@@ -743,6 +778,7 @@ export function SideNav({
     return () => {
       window.cancelAnimationFrame(rafId);
       window.removeEventListener('resize', updatePopoverPosition);
+      window.removeEventListener('scroll', updatePopoverPosition, true);
       resizeObserver?.disconnect();
     };
   }, [showMore, isClassicLayout]);
@@ -768,16 +804,7 @@ export function SideNav({
     <div
       className={`side-nav-more-popover${isClassicLayout ? ' side-nav-more-popover-classic' : ''}`}
       ref={morePopoverRef}
-      style={
-        isClassicLayout
-          ? {
-              position: 'fixed',
-              top: `${morePopoverPosition.top}px`,
-              left: `${morePopoverPosition.left}px`,
-              maxHeight: `${morePopoverPosition.maxHeight}px`,
-            }
-          : undefined
-      }
+      style={{ position: 'fixed', top: `${morePopoverPosition.top}px`, left: `${morePopoverPosition.left}px`, maxHeight: `${morePopoverPosition.maxHeight}px`, transform: 'none' }}
     >
       <div className="side-nav-more-title">{t('nav.morePlatforms', '更多平台')}</div>
       <div className="side-nav-more-list">
@@ -1008,7 +1035,7 @@ export function SideNav({
         )}
 
         {morePopoverContent && (
-          isClassicLayout && typeof document !== 'undefined'
+          typeof document !== 'undefined'
             ? createPortal(morePopoverContent, document.body)
             : morePopoverContent
         )}
@@ -1059,6 +1086,7 @@ export function SideNav({
       {!isClassicLayout && (
         <>
           <div className="nav-footer">
+            {!LITE_MODE && (
             <button
               className={`nav-item ${page === '2fa' && !shouldLockActiveOnMore ? 'active' : ''}`}
               onClick={() => setPage('2fa')}
@@ -1067,6 +1095,7 @@ export function SideNav({
               <ShieldCheck size={20} />
               <span className="tooltip">{t('nav.2faManager', '2FA / MFA 管理')}</span>
             </button>
+            )}
             <button
               className={`nav-item ${page === 'settings' && !shouldLockActiveOnMore ? 'active' : ''}`}
               onClick={() => setPage('settings')}
